@@ -59,7 +59,9 @@ void Skiplist::Put(const Slice& key, const Slice& value) {
 
     Node* next = cur->next[0];
     if (next != nullptr && CompareStringSlice(next->key, key) == 0) {
+        mem_usage_ -= next->value.size();
         next->value = value.ToString();
+        mem_usage_ += next->value.size();
         return;
     }
 
@@ -98,5 +100,43 @@ std::optional<std::string> Skiplist::Get(const Slice& key) const {
     return std::nullopt;
 }
 
-bool Skiplist::Delete(const Slice& key) { return false; }
-void Skiplist::Iterate(IterFn fn) const {}
+bool Skiplist::Delete(const Slice& key) { 
+    Node* prev[kMaxLevel];
+    Node* cur = head_;
+
+    for (int i = max_level_ - 1; i >= 0; i--) {
+        while (cur->next[i] != nullptr &&
+               CompareStringSlice(cur->next[i]->key, key) < 0) {
+            cur = cur->next[i];
+        }
+        prev[i] = cur;
+    }
+
+    Node* target = cur->next[0];
+    if (target == nullptr || CompareStringSlice(target->key, key) != 0) {
+        return false; 
+    } 
+
+    for (int i = 0; i < target->level; i++) {
+        prev[i]->next[i] = target->next[i];
+    }
+
+    mem_usage_ -= sizeof(Node) + target->key.size() + target->value.size()
+            + sizeof(Node*) * target->level;
+
+    delete[] target->next;
+    delete target;
+
+    while (max_level_ > 1 && head_->next[max_level_ - 1] == nullptr) {
+        max_level_--;
+    }
+
+    return true;
+}
+void Skiplist::Iterate(IterFn fn) const {
+    Node* cur = head_->next[0];
+    while(cur != nullptr){
+        fn(cur->key,cur->value);
+        cur = cur->next[0];        
+    }
+}
