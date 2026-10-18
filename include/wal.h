@@ -31,11 +31,12 @@ public:
 
     /**
      * @brief 追加一条记录并 fsync。
-     * @param key 键。
-     * @param value 值。
+     * @param type  操作类型，1 表示 Put，0 表示 Delete。
+     * @param key   键。
+     * @param value 值。Delete 时传空 Slice 即可。
      * @return 成功返回 OK；失败返回 IOError。
      */
-    Status Append(const Slice& key, const Slice& value);
+    Status Append(char type, const Slice& key, const Slice& value);
 
 
     /**
@@ -43,7 +44,7 @@ public:
      * @param fn 每读到一条有效记录调用一次。
      * @return 成功返回 OK；校验失败返回 Corruption。
      */
-    using RecoverFn = std::function<void(const Slice&, const Slice&)>;
+    using RecoverFn = std::function<void(char type, const Slice&, const Slice&)>;
     Status Recover(RecoverFn fn);
 
 

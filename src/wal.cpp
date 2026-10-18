@@ -47,11 +47,11 @@ WAL::~WAL() {
 }
 
 
-Status WAL::Append(const Slice& key,const Slice& value){
+Status WAL::Append(char type, const Slice& key,const Slice& value){
     std::string buf;
 
     buf.append(4,'\0');
-    buf.push_back(1);
+    buf.push_back(type);
 
     PutFixed32(buf,key.size());
     buf.append(key.data(), key.size());
@@ -118,7 +118,7 @@ Status WAL::Recover(RecoverFn fn){
             return Status::Corruption("checksum mismatch");
         }
 
-        fn(Slice(key), Slice(value));
+        fn(type, Slice(key), Slice(value));
     }
 
     return Status::OK();
