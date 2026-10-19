@@ -15,7 +15,7 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>* db) {
         return Status::IOError("mkdir failed: " + std::string(strerror(errno)));
     }  
     
-    db->reset(new DB(path));
+    (*db).reset(new DB(path));
     
    auto s = (*db)->wal_->Recover([&](char type, const Slice& key, const Slice& value) {
     if (type == 1) {
