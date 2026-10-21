@@ -48,6 +48,10 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
                     continue;
                 }
             }
+            if (filename.size() > 4 && filename.substr(filename.size() - 4) == ".tmp") {
+                unlink((path + "/" + filename).c_str());
+                continue;
+            }
         }
         closedir(dir);
     }
@@ -72,7 +76,7 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
 
 
 Status DB::MaybeFlush() {
-    const size_t kMaxMemTableSize = 100;
+    const size_t kMaxMemTableSize = 4 * 1024 *1024;
     
     if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
         return Status::OK();

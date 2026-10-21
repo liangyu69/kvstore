@@ -37,14 +37,16 @@ static Status WriteExact(int fd, const char* data, size_t n) {
 
 Status SSTable::Write(const std::string& dir_path, uint64_t file_id, const Skiplist& memtable) {
     //拼文件路径
-    char sst_name[256];
-    char idx_name[256];
-    snprintf(sst_name, sizeof(sst_name), "%s/%04lu.sst", dir_path.c_str(), file_id);
-    snprintf(idx_name, sizeof(idx_name), "%s/%04lu.idx", dir_path.c_str(), file_id);
+    char sst_tmp[256], idx_tmp[256];
+    char sst_final[256], idx_final[256];
+    snprintf(sst_tmp, sizeof(sst_tmp), "%s/%04lu.sst.tmp", dir_path.c_str(), file_id);
+    snprintf(idx_tmp, sizeof(idx_tmp), "%s/%04lu.idx.tmp", dir_path.c_str(), file_id);
+    snprintf(sst_final, sizeof(sst_final), "%s/%04lu.sst", dir_path.c_str(), file_id);
+    snprintf(idx_final, sizeof(idx_final), "%s/%04lu.idx", dir_path.c_str(), file_id);
 
     //尝试打开文件
-    int sst_fd = open(sst_name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    int idx_fd = open(idx_name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int sst_fd = open(sst_tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int idx_fd = open(idx_tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (sst_fd < 0 || idx_fd < 0) {
         if (sst_fd >= 0) close(sst_fd);
         if (idx_fd >= 0) close(idx_fd);
@@ -83,8 +85,8 @@ Status SSTable::Write(const std::string& dir_path, uint64_t file_id, const Skipl
     });
 
     if (!success) {
-        unlink(sst_name);
-        unlink(idx_name);
+        unlink(sst_tmp);
+        unlink(idx_tmp);
         close(sst_fd);
         close(idx_fd);
         return Status::IOError("write failed during iteration");
@@ -94,6 +96,18 @@ Status SSTable::Write(const std::string& dir_path, uint64_t file_id, const Skipl
     fsync(idx_fd);
     close(sst_fd);
     close(idx_fd);
+
+    if (rename(sst_tmp, sst_final) != 0 || rename(idx_tmp, idx_final) != 0) {
+        unlink(sst_tmp);
+        unlink(idx_tmp);
+        return Status::IOError("rename failed");
+    }
+
+    int dir_fd = open(dir_path.c_str(), O_RDONLY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
 
     return Status::OK();
 }
