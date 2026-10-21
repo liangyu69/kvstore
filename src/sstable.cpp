@@ -137,12 +137,12 @@ std::unique_ptr<SSTable> SSTable::Open(const std::string& dir_path, uint64_t fil
     close(idx_fd);
 
     // 3. 创建 SSTable 对象，这里的对象有key-index， 真正的获取数据还是需要根据索引去sst文件里找
-    return std::unique_ptr<SSTable>(new SSTable(sst_fd, index));
+    return std::unique_ptr<SSTable>(new SSTable(sst_fd, file_id, index));
 
 }
 
-SSTable::SSTable(int fd, const std::vector<std::pair<std::string, uint64_t>>& index)
-    : fd_(fd), index_(index) {}
+SSTable::SSTable(int fd, uint64_t file_id, const std::vector<std::pair<std::string, uint64_t>>& index)
+    : fd_(fd), file_id_(file_id), index_(index) {}
 
 SSTable::~SSTable() {
     if (fd_ >= 0) close(fd_);

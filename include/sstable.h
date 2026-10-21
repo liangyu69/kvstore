@@ -33,9 +33,15 @@ public:
      */
     std::optional<std::string> Get(const Slice& key) const;
 
+    /**
+     * @brief 获取当前sstable的id。
+     */
+    uint64_t GetFileId() const { return file_id_; }
+
 private:
-    SSTable(int fd, const std::vector<std::pair<std::string, uint64_t>>& index);
+    SSTable(int fd, uint64_t file_id, const std::vector<std::pair<std::string, uint64_t>>& index);
 
     int fd_;   // .sst 文件的文件描述符
+    uint64_t file_id_;
     std::vector<std::pair<std::string, uint64_t>> index_; // 内存索引：key -> 文件偏移量
 };

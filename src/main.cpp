@@ -1,27 +1,41 @@
-#include "sstable.h"
+#include "db.h"
 #include <cassert>
 #include <cstdio>
+#include <memory>
+#include <cstdlib>
 
 int main() {
-    // 1. 造一个跳表
-    Skiplist sl;
-    sl.Put(Slice("a"), Slice("1"));
-    sl.Put(Slice("b"), Slice("2"));
-    sl.Put(Slice("c"), Slice("3"));
+    std::string path = "/tmp/kvstore_flush_test";
+    system("rm -rf /tmp/kvstore_flush_test");
 
-    // 2. 写入磁盘
-    assert(SSTable::Write("/tmp", 1, sl).ok());
+    printf("--- 第一次运行：写入 ---\n");
+    {
+        std::unique_ptr<DB> db;
+        assert(DB::Open(path, db).ok());
+        for (int i = 0; i < 20; i++) {
+            std::string k = "key_" + std::to_string(i);
+            std::string v = "value_" + std::to_string(i);
+            assert(db->Put(Slice(k), Slice(v)).ok());
+        }
+    } // DB 析构，模拟进程退出
 
-    // 3. 重新打开
-    auto sst = SSTable::Open("/tmp", 1);
+    printf("--- 第二次运行：重启 ---\n");
+    {
+        std::unique_ptr<DB> db;
+        assert(DB::Open(path, db).ok());
+        for (int i = 0; i < 20; i++) {
+            std::string k = "key_" + std::to_string(i);
+            std::string expected_v = "value_" + std::to_string(i);
+            
+            auto v = db->Get(Slice(k));
+            if (!v.has_value() || *v != expected_v) {
+                printf("ERROR: 读取失败 key=%s, 期望=%s, 实际=%s\n", 
+                       k.c_str(), expected_v.c_str(), v.has_value() ? v->c_str() : "nullopt");
+                return 1;
+            }
+        }
+    }
 
-    // 4. 测试查询
-    auto v1 = sst->Get(Slice("b"));
-    assert(v1.has_value() && *v1 == "2");
-
-    auto v2 = sst->Get(Slice("not_exist"));
-    assert(!v2.has_value());
-
-    printf("SSTable basic test passed\n");
+    printf("Restart test passed! SSTable loaded successfully.\n");
     return 0;
 }

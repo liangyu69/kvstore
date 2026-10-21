@@ -4,10 +4,13 @@
 #include "status.h"
 #include "wal.h"
 #include "skiplist.h"
+#include "sstable.h"
 
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
+#include <cstdint>
 
 /**
  * @brief 对外暴露的 KV 数据库。
@@ -24,7 +27,7 @@ public:
      * @param db   输出参数，成功后指向新 DB 对象。
      * @return 成功返回 OK；失败返回 IOError/Corruption。
      */
-    static Status Open(const std::string& path, std::unique_ptr<DB>* db);
+    static Status Open(const std::string& path, std::unique_ptr<DB>& db);
 
     ~DB();
 
@@ -51,6 +54,18 @@ public:
 private:
     explicit DB(const std::string& path);
 
+    /**
+     * @brief 检查 MemTable 大小，若超过阈值则冻结并刷盘。
+     */
+    Status MaybeFlush();
+
+    std::string dir_path_;
     std::unique_ptr<WAL> wal_;
     std::unique_ptr<Skiplist> memtable_;
+    //被冻结的跳表
+    std::unique_ptr<Skiplist> immutable_;
+    //最新的sstable
+    std::vector<std::unique_ptr<SSTable>> sstables_;
+    //下一个sstable的编号
+    uint64_t next_file_id_;
 };
