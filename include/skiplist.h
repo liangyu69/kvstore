@@ -19,6 +19,15 @@
 class Skiplist {
 public:
     /**
+     * @brief 查找结果。
+     */
+    struct LookupResult {
+        enum Type { kNotFound, kFound, kDeleted };
+        Type type;
+        std::string value;
+    };
+
+    /**
      * @brief 构造一个空跳表。
      */
     Skiplist();
@@ -41,25 +50,24 @@ public:
     void Put(const Slice& key, const Slice& value);
 
     /**
-     * @brief 查找 key 对应的值。
+     * @brief 查找键，返回三态结果。
      * @param key 要查找的键。
      * @return 找到返回包含值的 optional；未找到返回 std::nullopt。
      */
-    std::optional<std::string> Get(const Slice& key) const;
+    LookupResult Get(const Slice& key) const;
 
     /**
-     * @brief 删除 key 对应的键值对。
+     * @brief 删除键（写墓碑）。
      * @param key 要删除的键。
-     * @return 删除成功返回 true；key 不存在返回 false。
      */
-    bool Delete(const Slice& key);
+    void Delete(const Slice& key);
 
     /**
      * @brief 遍历回调类型。
      *
      * 接受一个键值对，返回 void。用于 Iterate。
      */
-    using IterFn = std::function<void(const Slice&, const Slice&)>;
+    using IterFn = std::function<void(const Slice&, const Slice&, char)>;
 
     /**
      * @brief 按 key 升序遍历所有键值对。
@@ -87,7 +95,7 @@ private:
      * @param level 节点层数。
      * @return 新节点指针。
      */
-    Node* NewNode(const std::string& key, const std::string& value, int level);
+    Node* NewNode(const std::string& key, const std::string& value, char type, int level);
 
     /**
      * @brief 返回随机层数，范围 [1, kMaxLevel]。

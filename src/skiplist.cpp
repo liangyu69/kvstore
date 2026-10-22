@@ -4,23 +4,26 @@
 struct Skiplist::Node {
     std::string key;
     std::string value;
+    char type; //1=PUT,0=DELETE
     Node** next;
     int level;
 };
 
 Skiplist::Node* Skiplist::NewNode(const std::string& key,
                                   const std::string& value,
+                                  char type,
                                   int level) {
     Node* n = new Node();
     n->key = key;
     n->value = value;
+    n->type = type;
     n->level = level;
     n->next = new Node*[level]();
     return n;
 }
 
 Skiplist::Skiplist() : max_level_(1), mem_usage_(0) {
-    head_ = NewNode("", "", kMaxLevel);
+    head_ = NewNode("", "", 1, kMaxLevel);
 }
 
 
@@ -61,6 +64,7 @@ void Skiplist::Put(const Slice& key, const Slice& value) {
     if (next != nullptr && CompareStringSlice(next->key, key) == 0) {
         mem_usage_ -= next->value.size();
         next->value = value.ToString();
+        next->type = 1;
         mem_usage_ += next->value.size();
         return;
     }
@@ -73,7 +77,7 @@ void Skiplist::Put(const Slice& key, const Slice& value) {
         max_level_ = new_level;
     }
 
-    Node* node = NewNode(key.ToString(), value.ToString(), new_level);
+    Node* node = NewNode(key.ToString(), value.ToString(), 1,new_level);
     for (int i = 0; i < new_level; i++) {
         node->next[i] = prev[i]->next[i];
         prev[i]->next[i] = node;
@@ -83,7 +87,7 @@ void Skiplist::Put(const Slice& key, const Slice& value) {
             + sizeof(Node*) * new_level;
 }
 
-std::optional<std::string> Skiplist::Get(const Slice& key) const {
+Skiplist::LookupResult Skiplist::Get(const Slice& key) const {
     Node* cur = head_;
 
     for (int i = max_level_ - 1; i >= 0; i--) {
@@ -95,12 +99,15 @@ std::optional<std::string> Skiplist::Get(const Slice& key) const {
 
     Node* next = cur->next[0];
     if (next != nullptr && CompareStringSlice(next->key, key) == 0) {
-        return next->value;
+        if (next->type == 0) {
+            return {LookupResult::kDeleted, ""};
+        }
+        return {LookupResult::kFound, next->value};
     }
-    return std::nullopt;
+    return {LookupResult::kNotFound, ""};
 }
 
-bool Skiplist::Delete(const Slice& key) { 
+void Skiplist::Delete(const Slice& key) { 
     Node* prev[kMaxLevel];
     Node* cur = head_;
 
@@ -112,31 +119,40 @@ bool Skiplist::Delete(const Slice& key) {
         prev[i] = cur;
     }
 
-    Node* target = cur->next[0];
-    if (target == nullptr || CompareStringSlice(target->key, key) != 0) {
-        return false; 
-    } 
-
-    for (int i = 0; i < target->level; i++) {
-        prev[i]->next[i] = target->next[i];
+    Node* next = cur->next[0];
+    if (next != nullptr && CompareStringSlice(next->key, key) == 0) {
+        // 节点存在，改成墓碑
+        mem_usage_ -= next->value.size();
+        next->value = "";
+        next->type = 0;
+        // 墓碑的 value 为空，不加回 mem_usage_
+        return;
     }
 
-    mem_usage_ -= sizeof(Node) + target->key.size() + target->value.size()
-            + sizeof(Node*) * target->level;
 
-    delete[] target->next;
-    delete target;
-
-    while (max_level_ > 1 && head_->next[max_level_ - 1] == nullptr) {
-        max_level_--;
+    // 节点不存在，插入一个新的墓碑节点
+    int new_level = RandomLevel();
+    if (new_level > max_level_) {
+        for (int i = max_level_; i < new_level; i++) {
+            prev[i] = head_;
+        }
+        max_level_ = new_level;
     }
 
-    return true;
+    Node* node = NewNode(key.ToString(), "", 0, new_level);
+    for (int i = 0; i < new_level; i++) {
+        node->next[i] = prev[i]->next[i];
+        prev[i]->next[i] = node;
+    }
+
+    mem_usage_ += sizeof(Node) + key.size() + sizeof(Node*) * new_level;
 }
+
+
 void Skiplist::Iterate(IterFn fn) const {
     Node* cur = head_->next[0];
     while(cur != nullptr){
-        fn(cur->key,cur->value);
+        fn(cur->key, cur->value, cur->type);
         cur = cur->next[0];        
     }
 }

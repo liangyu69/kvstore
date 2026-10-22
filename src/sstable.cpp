@@ -56,12 +56,13 @@ Status SSTable::Write(const std::string& dir_path, uint64_t file_id, const Skipl
     uint64_t offset = 0;
     bool success = true;
 
-    memtable.Iterate([&](const Slice& key, const Slice& value) {
+    memtable.Iterate([&](const Slice& key, const Slice& value, char type) {
         if (!success) return;
 
         std::string buf;
         PutFixed32(buf, key.size());
         buf.append(key.data(), key.size());
+        buf.push_back(type);
         PutFixed32(buf, value.size());
         buf.append(value.data(), value.size());
 
@@ -163,7 +164,7 @@ SSTable::~SSTable() {
 }
 
 
-std::optional<std::string> SSTable::Get(const Slice& key) const {
+SSTable::LookupResult SSTable::Get(const Slice& key) const {
     //二分查找第一个大于等于key的键
     auto it = std::lower_bound(index_.begin(), index_.end(), key,
         [](const std::pair<std::string, uint64_t>& a, const Slice& b) {
@@ -171,25 +172,34 @@ std::optional<std::string> SSTable::Get(const Slice& key) const {
         });
 
     if (it == index_.end() || CompareStringSlice(it->first, key) != 0) {
-        return std::nullopt;   // 没找到
+        return {LookupResult::kNotFound, ""};   // 没找到
     }
 
     // 2. 拿到了偏移量，用 pread 从 .sst 读取
     uint64_t offset = it->second;
 
     uint32_t key_len;
-    if (pread(fd_, &key_len, 4, offset) != 4) return std::nullopt;
+    if (pread(fd_, &key_len, 4, offset) != 4) return {LookupResult::kNotFound, ""};
     offset += 4 + key_len;
 
+    char type;
+    if (pread(fd_, &type, 1, offset) != 1) return {LookupResult::kNotFound, ""};
+    offset += 1;
+
+    if (type == 0) {
+        return {LookupResult::kDeleted, ""};
+    }
+
     uint32_t val_len;
-    if (pread(fd_, &val_len, 4, offset) != 4) return std::nullopt;
-    
+    if (pread(fd_, &val_len, 4, offset) != 4) return {LookupResult::kNotFound, ""};
     offset += 4;
 
     std::string value(val_len, '\0');
     if (val_len > 0) {
-        if (pread(fd_, &value[0], val_len, offset) != (ssize_t)val_len) return std::nullopt;
+        if (pread(fd_, &value[0], val_len, offset) != (ssize_t)val_len) {
+            return {LookupResult::kNotFound, ""};
+        }
     }
 
-    return value;
+    return {LookupResult::kFound, value};
 }

@@ -76,7 +76,7 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
 
 
 Status DB::MaybeFlush() {
-    const size_t kMaxMemTableSize = 4 * 1024 *1024;
+    const size_t kMaxMemTableSize = 100;
     
     if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
         return Status::OK();
@@ -129,19 +129,35 @@ Status DB::Put(const Slice& key, const Slice& value) {
 
 
 std::optional<std::string> DB::Get(const Slice& key) {
-    auto v = memtable_->Get(key);
-    if (v) return v;
+    // 1. 查最新的内存 MemTable
+    auto r = memtable_->Get(key);
+    if (r.type == Skiplist::LookupResult::kFound) {
+        return r.value;
+    }
+    if (r.type == Skiplist::LookupResult::kDeleted) {
+        return std::nullopt;  // 找到墓碑，立刻返回，不准往后查
+    }
 
-    // 2. 查冻结的内存
+    // 2. 查冻结的 Immutable MemTable
     if (immutable_) {
-        v = immutable_->Get(key);
-        if (v) return v;
+        r = immutable_->Get(key);
+        if (r.type == Skiplist::LookupResult::kFound) {
+            return r.value;
+        }
+        if (r.type == Skiplist::LookupResult::kDeleted) {
+            return std::nullopt;
+        }
     }
 
     // 3. 查磁盘上的 SSTable（从新到旧）
     for (auto& sst : sstables_) {
-        v = sst->Get(key);
-        if (v) return v;
+        auto sr = sst->Get(key);
+        if (sr.type == SSTable::LookupResult::kFound) {
+            return sr.value;
+        }
+        if (sr.type == SSTable::LookupResult::kDeleted) {
+            return std::nullopt;  // 在 SSTable 里找到墓碑，立刻停止
+        }
     }
     
     return std::nullopt;

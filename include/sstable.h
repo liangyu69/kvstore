@@ -11,6 +11,15 @@
 class SSTable {
 public:
     /**
+     * @brief 查找结果（与 Skiplist 一致）。
+     */
+    struct LookupResult {
+        enum Type { kNotFound, kFound, kDeleted };
+        Type type;
+        std::string value;
+    };
+
+    /**
      * @brief 把一个跳表的数据写入磁盘，生成 .sst 和 .idx 文件。
      * @param dir_path 目录路径（如 "/tmp/kvstore_db"）。
      * @param file_id  文件编号（如 1，生成 0001.sst）。
@@ -31,7 +40,7 @@ public:
     /**
      * @brief 查找 key。
      */
-    std::optional<std::string> Get(const Slice& key) const;
+    LookupResult Get(const Slice& key) const;
 
     /**
      * @brief 获取当前sstable的id。
