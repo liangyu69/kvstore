@@ -203,3 +203,33 @@ SSTable::LookupResult SSTable::Get(const Slice& key) const {
 
     return {LookupResult::kFound, value};
 }
+
+
+void SSTable::Iterate(IterFn fn) const {
+    for (const auto& [key, offset] : index_) {
+        uint64_t cur = offset;
+
+        // 1. 读 key_len
+        uint32_t key_len;
+        if (pread(fd_, &key_len, 4, cur) != 4) return;
+        cur += 4 + key_len;
+
+        // 2. 读 type
+        char type;
+        if (pread(fd_, &type, 1, cur) != 1) return;
+        cur += 1;
+
+        // 3. 读 val_len
+        uint32_t val_len;
+        if (pread(fd_, &val_len, 4, cur) != 4) return;
+        cur += 4;
+
+        // 4. 读 value
+        std::string value(val_len, '\0');
+        if (val_len > 0) {
+            if (pread(fd_, &value[0], val_len, cur) != (ssize_t)val_len) return;
+        }
+
+        fn(Slice(key), Slice(value), type);
+    }
+}

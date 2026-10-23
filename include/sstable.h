@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <functional>
 
 class SSTable {
 public:
@@ -46,6 +47,13 @@ public:
      * @brief 获取当前sstable的id。
      */
     uint64_t GetFileId() const { return file_id_; }
+
+    using IterFn = std::function<void(const Slice&, const Slice&, char)>;
+    /**
+     * @brief 顺序遍历当前 SSTable 的所有键值对。
+     * @param fn 每读出一条调用一次。
+     */
+    void Iterate(IterFn fn) const;
 
 private:
     SSTable(int fd, uint64_t file_id, const std::vector<std::pair<std::string, uint64_t>>& index);
