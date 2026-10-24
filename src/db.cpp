@@ -115,6 +115,43 @@ Status DB::MaybeFlush() {
 
     printf("[Flush] MemTable flushed to %04lu.sst\n", next_file_id_ - 1);
 
+    // 5. 当size >=4 时触发compaction
+    if (sstables_.size() >= 4) {
+        std::vector<std::unique_ptr<SSTable>> inputs;
+        for (auto& sst_item : sstables_) {
+            inputs.push_back(std::move(sst_item));
+        }
+        sstables_.clear();
+
+        auto new_id=next_file_id_++;
+
+        Status cs = Compaction::Run(dir_path_, inputs, new_id);
+        if (!cs.ok()) {
+            return cs;
+        }
+
+        // 删除旧文件
+        for (auto& old_sst : inputs) {
+            char old_sst_path[256], old_idx_path[256];
+            snprintf(old_sst_path, sizeof(old_sst_path), "%s/%04lu.sst", 
+                     dir_path_.c_str(), old_sst->GetFileId());
+            snprintf(old_idx_path, sizeof(old_idx_path), "%s/%04lu.idx", 
+                     dir_path_.c_str(), old_sst->GetFileId());
+            unlink(old_sst_path);
+            unlink(old_idx_path);
+            old_sst.reset();
+        }
+
+        // 加载新合并的文件
+        auto merged_sst = SSTable::Open(dir_path_, new_id);
+        if (merged_sst) {
+            sstables_.push_back(std::move(merged_sst));
+        }
+
+        printf("[Compaction] Merged %zu files into %04lu.sst\n", 
+               inputs.size(), new_id);
+    }
+
     return Status::OK();
 }
 

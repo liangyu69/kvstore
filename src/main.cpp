@@ -1,52 +1,68 @@
 #include "db.h"
-#include "sstable.h"
 #include <cassert>
 #include <cstdio>
 #include <memory>
 #include <cstdlib>
 
 int main() {
-    std::string path = "/tmp/kvstore_iter_test";
-    system("rm -rf /tmp/kvstore_iter_test");
+    std::string path = "/tmp/kvstore_compaction_test";
+    system("rm -rf /tmp/kvstore_compaction_test");
 
-    printf("--- 写入数据 ---\n");
+    printf("--- 第一次运行：写入、覆盖、删除 ---\n");
     {
         std::unique_ptr<DB> db;
-        DB::Open(path, db);
-        // 写 3 条，触发刷盘（阈值 100）
-        db->Put(Slice("b"), Slice("2"));
-        db->Put(Slice("a"), Slice("1"));
-        db->Put(Slice("c"), Slice("3"));
-        db->Delete(Slice("a"));  // 删掉 a，看看墓碑
+        assert(DB::Open(path, db).ok());
+
+        // 1. 写入 30 条
+        for (int i = 0; i < 30; i++) {
+            std::string k = "key_" + std::to_string(i);
+            std::string v = "v1_" + std::to_string(i);
+            assert(db->Put(Slice(k), Slice(v)).ok());
+        }
+
+        // 2. 覆盖其中 10 条
+        for (int i = 0; i < 10; i++) {
+            std::string k = "key_" + std::to_string(i);
+            std::string v = "v2_" + std::to_string(i);
+            assert(db->Put(Slice(k), Slice(v)).ok());
+        }
+
+        // 3. 删除其中 5 条
+        for (int i = 10; i < 15; i++) {
+            std::string k = "key_" + std::to_string(i);
+            assert(db->Delete(Slice(k)).ok());
+        }
     }
 
-    printf("--- 遍历 0001.sst ---\n");
-    auto sst = SSTable::Open(path, 1);
-    if (!sst) {
-        printf("0001.sst not found\n");
-        return 1;
+    printf("--- 第二次运行：重启，验证 ---\n");
+    {
+        std::unique_ptr<DB> db;
+        assert(DB::Open(path, db).ok());
+
+        // 验证覆盖的（0-9 应该是 v2）
+        for (int i = 0; i < 10; i++) {
+            std::string k = "key_" + std::to_string(i);
+            std::string expected = "v2_" + std::to_string(i);
+            auto v = db->Get(Slice(k));
+            assert(v.has_value() && *v == expected);
+        }
+
+        // 验证删除的（10-14 应该是 nullopt）
+        for (int i = 10; i < 15; i++) {
+            std::string k = "key_" + std::to_string(i);
+            auto v = db->Get(Slice(k));
+            assert(!v.has_value());
+        }
+
+        // 验证未动的（15-29 应该是 v1）
+        for (int i = 15; i < 30; i++) {
+            std::string k = "key_" + std::to_string(i);
+            std::string expected = "v1_" + std::to_string(i);
+            auto v = db->Get(Slice(k));
+            assert(v.has_value() && *v == expected);
+        }
     }
 
-    sst->Iterate([](const Slice& k, const Slice& v, char type) {
-        printf("  key=%s, value=%s, type=%d\n",
-               k.ToString().c_str(),
-               v.ToString().c_str(),
-               (int)type);
-    });
-
-    auto sst2 = SSTable::Open(path, 2);
-    if (!sst2) {
-        printf("0002.sst not found\n");
-        return 1;
-    }
-
-    sst2->Iterate([](const Slice& k, const Slice& v, char type) {
-        printf("  key=%s, value=%s, type=%d\n",
-               k.ToString().c_str(),
-               v.ToString().c_str(),
-               (int)type);
-    });
-
-    printf("Iterate test passed!\n");
+    printf("Compaction ultimate test passed!\n");
     return 0;
 }

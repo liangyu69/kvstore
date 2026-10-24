@@ -5,6 +5,7 @@
 #include "wal.h"
 #include "skiplist.h"
 #include "sstable.h"
+#include "compaction.h"
 
 #include <memory>
 #include <optional>
