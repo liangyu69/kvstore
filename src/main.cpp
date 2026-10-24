@@ -6,6 +6,7 @@
 
 int main() {
     std::string path = "../data/kvstore_test";
+    system("mkdir -p ../data");        
     system("rm -rf ../data/kvstore_test");
 
     printf("--- 第一次运行：写入、覆盖、删除 ---\n");
