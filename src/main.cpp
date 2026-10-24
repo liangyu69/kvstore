@@ -5,8 +5,8 @@
 #include <cstdlib>
 
 int main() {
-    std::string path = "/tmp/kvstore_compaction_test";
-    system("rm -rf /tmp/kvstore_compaction_test");
+    std::string path = "../data/kvstore_test";
+    system("rm -rf ../data/kvstore_test");
 
     printf("--- 第一次运行：写入、覆盖、删除 ---\n");
     {
