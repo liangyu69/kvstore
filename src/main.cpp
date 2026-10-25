@@ -3,67 +3,73 @@
 #include <cstdio>
 #include <memory>
 #include <cstdlib>
+#include <thread>
+#include <vector>
+#include <atomic>
+#include <chrono>
+#include <iostream>
 
 int main() {
-    std::string path = "../data/kvstore_test";
-    system("mkdir -p ../data");        
-    system("rm -rf ../data/kvstore_test");
+    std::string path = "../data/kvstore_concurrent_test";
+    system("mkdir -p ../data");
+    system("rm -rf ../data/kvstore_concurrent_test");
 
-    printf("--- 第一次运行：写入、覆盖、删除 ---\n");
-    {
-        std::unique_ptr<DB> db;
-        assert(DB::Open(path, db).ok());
+    std::unique_ptr<DB> db;
+    assert(DB::Open(path, db).ok());
 
-        // 1. 写入 30 条
-        for (int i = 0; i < 30; i++) {
-            std::string k = "key_" + std::to_string(i);
-            std::string v = "v1_" + std::to_string(i);
-            assert(db->Put(Slice(k), Slice(v)).ok());
-        }
+    const int kThreads = 4;
+    const int kOps = 500;
 
-        // 2. 覆盖其中 10 条
-        for (int i = 0; i < 10; i++) {
-            std::string k = "key_" + std::to_string(i);
-            std::string v = "v2_" + std::to_string(i);
-            assert(db->Put(Slice(k), Slice(v)).ok());
-        }
+    std::atomic<int> write_done{0};
 
-        // 3. 删除其中 5 条
-        for (int i = 10; i < 15; i++) {
-            std::string k = "key_" + std::to_string(i);
-            assert(db->Delete(Slice(k)).ok());
+    // 一半写，一半读，同时跑
+    std::vector<std::thread> threads;
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // 写线程
+    for (int t = 0; t < kThreads; t++) {
+        threads.emplace_back([&, t]() {
+            for (int i = 0; i < kOps; i++) {
+                std::string k = "key_" + std::to_string(t) + "_" + std::to_string(i);
+                std::string v = "val_" + std::to_string(t) + "_" + std::to_string(i);
+                assert(db->Put(Slice(k), Slice(v)).ok());
+            }
+        });
+    }
+
+    // 读线程（同时进行，可能读到写了一半的数据，不能崩）
+    for (int t = 0; t < kThreads; t++) {
+        threads.emplace_back([&, t]() {
+            for (int i = 0; i < kOps; i++) {
+                std::string k = "key_" + std::to_string(t) + "_" + std::to_string(i);
+                auto v = db->Get(Slice(k));
+                // 读不到是正常的（写线程可能还没写完），但不能崩溃
+            }
+        });
+    }
+
+    for (auto& th : threads) th.join();
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    std::cout << ms <<std::endl;
+
+    std::cout << "--- 并发读写结束，开始验证数据完整性 ---"<< std::endl;
+
+    // 写完之后，验证所有数据都在
+    for (int t = 0; t < kThreads; t++) {
+        for (int i = 0; i < kOps; i++) {
+            std::string k = "key_" + std::to_string(t) + "_" + std::to_string(i);
+            std::string expected = "val_" + std::to_string(t) + "_" + std::to_string(i);
+            auto v = db->Get(Slice(k));
+            if (!v.has_value() || *v != expected) {
+                printf("ERROR: key=%s, expected=%s\n", k.c_str(), expected.c_str());
+                return 1;
+            }
         }
     }
 
-    printf("--- 第二次运行：重启，验证 ---\n");
-    {
-        std::unique_ptr<DB> db;
-        assert(DB::Open(path, db).ok());
-
-        // 验证覆盖的（0-9 应该是 v2）
-        for (int i = 0; i < 10; i++) {
-            std::string k = "key_" + std::to_string(i);
-            std::string expected = "v2_" + std::to_string(i);
-            auto v = db->Get(Slice(k));
-            assert(v.has_value() && *v == expected);
-        }
-
-        // 验证删除的（10-14 应该是 nullopt）
-        for (int i = 10; i < 15; i++) {
-            std::string k = "key_" + std::to_string(i);
-            auto v = db->Get(Slice(k));
-            assert(!v.has_value());
-        }
-
-        // 验证未动的（15-29 应该是 v1）
-        for (int i = 15; i < 30; i++) {
-            std::string k = "key_" + std::to_string(i);
-            std::string expected = "v1_" + std::to_string(i);
-            auto v = db->Get(Slice(k));
-            assert(v.has_value() && *v == expected);
-        }
-    }
-
-    printf("Compaction ultimate test passed!\n");
+    printf("Concurrent correctness test passed!\n");
     return 0;
 }

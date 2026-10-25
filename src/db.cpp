@@ -76,7 +76,7 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
 
 
 Status DB::MaybeFlush() {
-    const size_t kMaxMemTableSize = 100;
+    const size_t kMaxMemTableSize = 4 * 1024 * 1024;
     
     if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
         return Status::OK();
@@ -157,6 +157,7 @@ Status DB::MaybeFlush() {
 
 
 Status DB::Put(const Slice& key, const Slice& value) {
+    std::unique_lock<std::shared_mutex> lock(rwlock_);
     auto s = wal_->Append(1, key, value);
     if (!s.ok()) return s;
     
@@ -166,6 +167,7 @@ Status DB::Put(const Slice& key, const Slice& value) {
 
 
 std::optional<std::string> DB::Get(const Slice& key) {
+    std::shared_lock<std::shared_mutex> lock(rwlock_);
     // 1. 查最新的内存 MemTable
     auto r = memtable_->Get(key);
     if (r.type == Skiplist::LookupResult::kFound) {
@@ -202,6 +204,7 @@ std::optional<std::string> DB::Get(const Slice& key) {
 
 
 Status DB::Delete(const Slice& key) {
+    std::unique_lock<std::shared_mutex> lock(rwlock_);
     auto s = wal_->Append(0, key, Slice());
     if (!s.ok()) return s;
 

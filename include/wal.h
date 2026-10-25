@@ -5,6 +5,7 @@
 
 #include <string>
 #include <functional>
+#include <mutex>
 
 /**
  * @brief 预写日志（Write-Ahead Log）。
@@ -57,4 +58,5 @@ public:
 private:
     int fd_;
     std::string path_;
+    std::mutex mu_;
 };

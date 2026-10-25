@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <shared_mutex>
 
 /**
  * @brief 对外暴露的 KV 数据库。
@@ -69,4 +70,6 @@ private:
     std::vector<std::unique_ptr<SSTable>> sstables_;
     //下一个sstable的编号
     uint64_t next_file_id_;
+
+    std::shared_mutex rwlock_;
 };
