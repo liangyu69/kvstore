@@ -48,7 +48,6 @@ WAL::~WAL() {
 
 
 Status WAL::Append(char type, const Slice& key,const Slice& value){
-    std::lock_guard<std::mutex> lock(mu_);
     std::string buf;
 
     buf.append(4,'\0');
@@ -127,7 +126,6 @@ Status WAL::Recover(RecoverFn fn){
 
 
 Status WAL::Sync() {
-    std::lock_guard<std::mutex> lock(mu_);
     if (fsync(fd_) < 0) {
         return Status::IOError("fsync failed: " + std::string(strerror(errno)));
     }

@@ -77,79 +77,89 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
 
 Status DB::MaybeFlush() {
     const size_t kMaxMemTableSize = 4 * 1024 * 1024;
-    
-    if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
-        return Status::OK();
-    }
 
-    // 1. 冻结当前 MemTable
-    immutable_ = std::move(memtable_);
-    memtable_ = std::make_unique<Skiplist>();
+    std::unique_ptr<Skiplist> frozen_mem;
+    uint64_t flush_id = 0;
 
-    // 2. 刷盘到 SSTable
-    // file_id 从 1 开始，比如生成 0001.sst
-    Status s = SSTable::Write(dir_path_, next_file_id_, *immutable_);
-    if (!s.ok()) {
-        return s;
-    }
+    // ========== 第一段：锁内，极速冻结 ==========
+    {
+        std::unique_lock<std::shared_mutex> lock(rwlock_);
+        if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
+            return Status::OK();
+        }
+        immutable_ = std::move(memtable_);
+        memtable_ = std::make_unique<Skiplist>();
+        frozen_mem = std::move(immutable_);
+        flush_id = next_file_id_++;
+    } // 释放锁
+
+    // ========== 第二段：锁外，慢速刷盘 ==========
+    Status s = SSTable::Write(dir_path_, flush_id, *frozen_mem);
+    if (!s.ok()) return s;
+
     int dir_fd = open(dir_path_.c_str(), O_RDONLY);
     fsync(dir_fd);
     close(dir_fd);
 
-    // 3. 加载到内存中，插入到最前面（因为是最新的）
-    auto sst = SSTable::Open(dir_path_, next_file_id_);
-    if (sst) {
-        sstables_.insert(sstables_.begin(), std::move(sst));
-    }
-    
-    next_file_id_++;
+    frozen_mem.reset();
 
-    // 4. 释放冻结的 MemTable
-    immutable_.reset();
+    // ========== 第三段：锁内，加入列表，判断是否合并 ==========
+    bool need_compaction = false;
+    std::vector<std::unique_ptr<SSTable>> inputs;
+    uint64_t compaction_id = 0;
 
-    std::string wal_path = dir_path_ + "/wal.log";
-    
-    wal_.reset(); // 关闭旧 WAL
-    unlink(wal_path.c_str()); // 删掉旧文件
-    wal_ = std::make_unique<WAL>(wal_path); // 创建新 WAL
-
-    printf("[Flush] MemTable flushed to %04lu.sst\n", next_file_id_ - 1);
-
-    // 5. 当size >=4 时触发compaction
-    if (sstables_.size() >= 4) {
-        std::vector<std::unique_ptr<SSTable>> inputs;
-        for (auto& sst_item : sstables_) {
-            inputs.push_back(std::move(sst_item));
-        }
-        sstables_.clear();
-
-        auto new_id=next_file_id_++;
-
-        Status cs = Compaction::Run(dir_path_, inputs, new_id);
-        if (!cs.ok()) {
-            return cs;
+    {
+        std::unique_lock<std::shared_mutex> lock(rwlock_);
+        auto sst = SSTable::Open(dir_path_, flush_id);
+        if (sst) {
+            sstables_.insert(sstables_.begin(), std::move(sst));
         }
 
-        // 删除旧文件
+        if (sstables_.size() >= 4) {
+            need_compaction = true;
+            for (auto& sst_item : sstables_) {
+                inputs.push_back(std::move(sst_item));
+            }
+            sstables_.clear();
+            compaction_id = next_file_id_++;
+        }
+    } // 释放锁
+
+    // ========== 第四段：锁外，慢速合并 ==========
+    if (need_compaction) {
+        Status cs = Compaction::Run(dir_path_, inputs, compaction_id);
+        if (!cs.ok()) return cs;
+
         for (auto& old_sst : inputs) {
             char old_sst_path[256], old_idx_path[256];
-            snprintf(old_sst_path, sizeof(old_sst_path), "%s/%04lu.sst", 
+            snprintf(old_sst_path, sizeof(old_sst_path), "%s/%04lu.sst",
                      dir_path_.c_str(), old_sst->GetFileId());
-            snprintf(old_idx_path, sizeof(old_idx_path), "%s/%04lu.idx", 
+            snprintf(old_idx_path, sizeof(old_idx_path), "%s/%04lu.idx",
                      dir_path_.c_str(), old_sst->GetFileId());
             unlink(old_sst_path);
             unlink(old_idx_path);
             old_sst.reset();
         }
 
-        // 加载新合并的文件
-        auto merged_sst = SSTable::Open(dir_path_, new_id);
+        std::unique_lock<std::shared_mutex> lock(rwlock_);
+        auto merged_sst = SSTable::Open(dir_path_, compaction_id);
         if (merged_sst) {
             sstables_.push_back(std::move(merged_sst));
         }
+    }
 
-        printf("[Compaction] Merged %zu files into %04lu.sst\n", 
-               inputs.size(), new_id);
+    // ========== 第五段：滚动 WAL（同样需要锁） ==========
+    {
+        std::unique_lock<std::shared_mutex> lock(rwlock_);
+        std::string wal_path = dir_path_ + "/wal.log";
+        wal_.reset();
+        unlink(wal_path.c_str());
+        wal_ = std::make_unique<WAL>(wal_path);
+    }
+
+    printf("[Flush] MemTable flushed to %04lu.sst\n", flush_id);
+    if (need_compaction) {
+        printf("[Compaction] Merged %zu files into %04lu.sst\n", inputs.size(), compaction_id);
     }
 
     return Status::OK();
@@ -157,11 +167,12 @@ Status DB::MaybeFlush() {
 
 
 Status DB::Put(const Slice& key, const Slice& value) {
-    std::unique_lock<std::shared_mutex> lock(rwlock_);
-    auto s = wal_->Append(1, key, value);
-    if (!s.ok()) return s;
-    
-    memtable_->Put(key, value);
+    {
+        std::unique_lock<std::shared_mutex> lock(rwlock_);
+        auto s = wal_->Append(1, key, value);
+        if (!s.ok()) return s;
+        memtable_->Put(key, value);
+    }
     return MaybeFlush();
 }
 
@@ -204,10 +215,11 @@ std::optional<std::string> DB::Get(const Slice& key) {
 
 
 Status DB::Delete(const Slice& key) {
-    std::unique_lock<std::shared_mutex> lock(rwlock_);
-    auto s = wal_->Append(0, key, Slice());
-    if (!s.ok()) return s;
-
-    memtable_->Delete(key);
+    {
+        std::unique_lock<std::shared_mutex> lock(rwlock_);
+        auto s = wal_->Append(0, key, Slice());
+        if (!s.ok()) return s;
+        memtable_->Delete(key);
+    }
     return MaybeFlush();
 }

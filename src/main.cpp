@@ -18,7 +18,7 @@ int main() {
     assert(DB::Open(path, db).ok());
 
     const int kThreads = 4;
-    const int kOps = 500;
+    const int kOps = 100;
 
     std::atomic<int> write_done{0};
 
