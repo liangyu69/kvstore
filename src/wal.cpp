@@ -81,30 +81,35 @@ Status WAL::Append(char type, const Slice& key,const Slice& value){
 Status WAL::Recover(RecoverFn fn){
     lseek(fd_, 0, SEEK_SET);
     while (true) {
+        off_t record_start = lseek(fd_, 0, SEEK_CUR);
+
         uint32_t expected_crc;
         ssize_t n = read(fd_, &expected_crc, 4);
         if (n == 0) break;   
-        if (n < 4) break;    
+        if (n < 4) {
+            ftruncate(fd_, record_start);  // 截断半截数据
+            break;
+        }    
 
         char type;
         n = read(fd_, &type, 1);
-        if (n != 1) break;
+        if (n != 1) { ftruncate(fd_, record_start); break; }
 
         uint32_t key_len;
         n = read(fd_, &key_len, 4);
-        if (n != 4) break;
+        if (n != 4) { ftruncate(fd_, record_start); break; }
 
         std::string key(key_len, '\0');
         n = read(fd_, &key[0], key_len);
-        if (n != (ssize_t)key_len) break;
+        if (n != (ssize_t)key_len) { ftruncate(fd_, record_start); break; }
 
         uint32_t val_len;
         n = read(fd_, &val_len, 4);
-        if (n != 4) break;
+        if (n != 4) { ftruncate(fd_, record_start); break; }
 
         std::string value(val_len, '\0');
         n = read(fd_, &value[0], val_len);
-        if (n != (ssize_t)val_len) break;
+        if (n != (ssize_t)val_len) { ftruncate(fd_, record_start); break; }
 
         std::string check_buf;
         check_buf.push_back(type);
@@ -115,7 +120,8 @@ Status WAL::Recover(RecoverFn fn){
 
         uint32_t actual_crc = crc32(check_buf.data(), check_buf.size());
         if (actual_crc != expected_crc) {
-            return Status::Corruption("checksum mismatch");
+            ftruncate(fd_, record_start);  // 校验失败，截断
+            break;
         }
 
         fn(type, Slice(key), Slice(value));

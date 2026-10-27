@@ -12,13 +12,12 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-#include <shared_mutex>
+#include <mutex>
 
 /**
  * @brief 对外暴露的 KV 数据库。
  *
  * 组合 WAL（持久化）和 Skiplist（内存索引）。
- * 不保证线程安全。
  */
 
 class DB {
@@ -57,19 +56,18 @@ private:
     explicit DB(const std::string& path);
 
     /**
-     * @brief 检查 MemTable 大小，若超过阈值则冻结并刷盘。
+     * @brief 检查 MemTable 大小，若超过阈值则刷盘。
      */
-    Status MaybeFlush();
+    Status MaybeFlushLocked();
 
     std::string dir_path_;
     std::unique_ptr<WAL> wal_;
     std::unique_ptr<Skiplist> memtable_;
-    //被冻结的跳表
-    std::unique_ptr<Skiplist> immutable_;
+
     //最新的sstable
     std::vector<std::unique_ptr<SSTable>> sstables_;
     //下一个sstable的编号
     uint64_t next_file_id_;
 
-    std::shared_mutex rwlock_;
+    std::mutex mu_;
 };

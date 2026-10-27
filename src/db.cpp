@@ -75,91 +75,79 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
 }
 
 
-Status DB::MaybeFlush() {
+Status DB::MaybeFlushLocked() {
     const size_t kMaxMemTableSize = 4 * 1024 * 1024;
+    
+    if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
+        return Status::OK();
+    }
 
-    std::unique_ptr<Skiplist> frozen_mem;
-    uint64_t flush_id = 0;
+    // 1. 用局部变量接管当前 MemTable
+    auto old = std::move(memtable_);
+    memtable_ = std::make_unique<Skiplist>();
+    uint64_t flush_id = next_file_id_;
 
-    // ========== 第一段：锁内，极速冻结 ==========
-    {
-        std::unique_lock<std::shared_mutex> lock(rwlock_);
-        if (memtable_->ApproximateMemoryUsage() < kMaxMemTableSize) {
-            return Status::OK();
-        }
-        immutable_ = std::move(memtable_);
-        memtable_ = std::make_unique<Skiplist>();
-        frozen_mem = std::move(immutable_);
-        flush_id = next_file_id_++;
-    } // 释放锁
-
-    // ========== 第二段：锁外，慢速刷盘 ==========
-    Status s = SSTable::Write(dir_path_, flush_id, *frozen_mem);
-    if (!s.ok()) return s;
-
+    // 2. 刷盘
+    Status s = SSTable::Write(dir_path_, flush_id, *old);
+    if (!s.ok()) {
+        // ★ 回滚：把老数据搬回去，文件编号回退
+        memtable_ = std::move(old); 
+        // 但因为是大锁，这期间绝对没人写，所以直接把 memtable_ 恢复即可。
+        return s;
+    }
+    
     int dir_fd = open(dir_path_.c_str(), O_RDONLY);
     fsync(dir_fd);
     close(dir_fd);
 
-    frozen_mem.reset();
+    // 3. 加入列表
+    auto sst = SSTable::Open(dir_path_, flush_id);
+    if (sst) {
+        sstables_.insert(sstables_.begin(), std::move(sst));
+    }
+    next_file_id_++;
 
-    // ========== 第三段：锁内，加入列表，判断是否合并 ==========
-    bool need_compaction = false;
-    std::vector<std::unique_ptr<SSTable>> inputs;
-    uint64_t compaction_id = 0;
+    // 4. 释放老的 MemTable
+    old.reset();
 
-    {
-        std::unique_lock<std::shared_mutex> lock(rwlock_);
-        auto sst = SSTable::Open(dir_path_, flush_id);
-        if (sst) {
-            sstables_.insert(sstables_.begin(), std::move(sst));
+    // 5. 滚动 WAL
+    std::string wal_path = dir_path_ + "/wal.log";
+    wal_.reset();
+    unlink(wal_path.c_str());
+    wal_ = std::make_unique<WAL>(wal_path);
+
+    printf("[Flush] MemTable flushed to %04lu.sst\n", flush_id);
+
+    // 6. 触发 Compaction
+    if (sstables_.size() >= 4) {
+        std::vector<std::unique_ptr<SSTable>> inputs;
+        for (auto& sst_item : sstables_) {
+            inputs.push_back(std::move(sst_item));
         }
+        sstables_.clear();
 
-        if (sstables_.size() >= 4) {
-            need_compaction = true;
-            for (auto& sst_item : sstables_) {
-                inputs.push_back(std::move(sst_item));
-            }
-            sstables_.clear();
-            compaction_id = next_file_id_++;
+        uint64_t new_id = next_file_id_++;
+        Status cs = Compaction::Run(dir_path_, inputs, new_id);
+        
+        if (!cs.ok()) {
+            return cs;
         }
-    } // 释放锁
-
-    // ========== 第四段：锁外，慢速合并 ==========
-    if (need_compaction) {
-        Status cs = Compaction::Run(dir_path_, inputs, compaction_id);
-        if (!cs.ok()) return cs;
 
         for (auto& old_sst : inputs) {
             char old_sst_path[256], old_idx_path[256];
-            snprintf(old_sst_path, sizeof(old_sst_path), "%s/%04lu.sst",
-                     dir_path_.c_str(), old_sst->GetFileId());
-            snprintf(old_idx_path, sizeof(old_idx_path), "%s/%04lu.idx",
-                     dir_path_.c_str(), old_sst->GetFileId());
+            snprintf(old_sst_path, sizeof(old_sst_path), "%s/%04lu.sst", dir_path_.c_str(), old_sst->GetFileId());
+            snprintf(old_idx_path, sizeof(old_idx_path), "%s/%04lu.idx", dir_path_.c_str(), old_sst->GetFileId());
             unlink(old_sst_path);
             unlink(old_idx_path);
             old_sst.reset();
         }
 
-        std::unique_lock<std::shared_mutex> lock(rwlock_);
-        auto merged_sst = SSTable::Open(dir_path_, compaction_id);
+        auto merged_sst = SSTable::Open(dir_path_, new_id);
         if (merged_sst) {
             sstables_.push_back(std::move(merged_sst));
         }
-    }
 
-    // ========== 第五段：滚动 WAL（同样需要锁） ==========
-    {
-        std::unique_lock<std::shared_mutex> lock(rwlock_);
-        std::string wal_path = dir_path_ + "/wal.log";
-        wal_.reset();
-        unlink(wal_path.c_str());
-        wal_ = std::make_unique<WAL>(wal_path);
-    }
-
-    printf("[Flush] MemTable flushed to %04lu.sst\n", flush_id);
-    if (need_compaction) {
-        printf("[Compaction] Merged %zu files into %04lu.sst\n", inputs.size(), compaction_id);
+        printf("[Compaction] Merged %zu files into %04lu.sst\n", inputs.size(), new_id);
     }
 
     return Status::OK();
@@ -167,18 +155,18 @@ Status DB::MaybeFlush() {
 
 
 Status DB::Put(const Slice& key, const Slice& value) {
-    {
-        std::unique_lock<std::shared_mutex> lock(rwlock_);
-        auto s = wal_->Append(1, key, value);
-        if (!s.ok()) return s;
-        memtable_->Put(key, value);
-    }
-    return MaybeFlush();
+    
+    std::lock_guard<std::mutex> lock(mu_);
+    auto s = wal_->Append(1, key, value);
+    if (!s.ok()) return s;
+    memtable_->Put(key, value);
+    
+    return MaybeFlushLocked();
 }
 
 
 std::optional<std::string> DB::Get(const Slice& key) {
-    std::shared_lock<std::shared_mutex> lock(rwlock_);
+    std::lock_guard<std::mutex> lock(mu_);
     // 1. 查最新的内存 MemTable
     auto r = memtable_->Get(key);
     if (r.type == Skiplist::LookupResult::kFound) {
@@ -188,18 +176,7 @@ std::optional<std::string> DB::Get(const Slice& key) {
         return std::nullopt;  // 找到墓碑，立刻返回，不准往后查
     }
 
-    // 2. 查冻结的 Immutable MemTable
-    if (immutable_) {
-        r = immutable_->Get(key);
-        if (r.type == Skiplist::LookupResult::kFound) {
-            return r.value;
-        }
-        if (r.type == Skiplist::LookupResult::kDeleted) {
-            return std::nullopt;
-        }
-    }
-
-    // 3. 查磁盘上的 SSTable（从新到旧）
+    // 2. 查磁盘上的 SSTable（从新到旧）
     for (auto& sst : sstables_) {
         auto sr = sst->Get(key);
         if (sr.type == SSTable::LookupResult::kFound) {
@@ -215,11 +192,11 @@ std::optional<std::string> DB::Get(const Slice& key) {
 
 
 Status DB::Delete(const Slice& key) {
-    {
-        std::unique_lock<std::shared_mutex> lock(rwlock_);
-        auto s = wal_->Append(0, key, Slice());
-        if (!s.ok()) return s;
-        memtable_->Delete(key);
-    }
-    return MaybeFlush();
+    
+    std::lock_guard<std::mutex> lock(mu_);
+    auto s = wal_->Append(0, key, Slice());
+    if (!s.ok()) return s;
+    memtable_->Delete(key);
+    
+    return MaybeFlushLocked();
 }
