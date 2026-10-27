@@ -46,27 +46,33 @@ WAL::~WAL() {
     }
 }
 
-
-Status WAL::Append(char type, const Slice& key,const Slice& value){
-    auto s = AppendNoSync(type, key, value);
-    if (!s.ok()) return s;
-    return Sync();
+Status WAL::Append(char type, const Slice& key, const Slice& value) {
+    // 构造一个只包含 1 条数据的批量操作，直接复用 AppendBatch 的逻辑
+    BatchOp op{static_cast<OpType>(type), key.ToString(), value.ToString()};
+    return AppendBatch({op});
 }
 
-// wal.cpp
-Status WAL::AppendNoSync(char type, const Slice& key, const Slice& value) {
-    // 把原来 Append 里除了 fsync 之外的所有逻辑搬过来
+Status WAL::AppendBatch(const std::vector<BatchOp>& ops) {
+    if (ops.empty()) return Status::OK();
+
     std::string buf;
-    buf.append(4, '\0');
-    buf.push_back(type);
-    PutFixed32(buf, key.size());
-    buf.append(key.data(), key.size());
-    PutFixed32(buf, value.size());
-    buf.append(value.data(), value.size());
+    for (const auto& op : ops) {
+        // 预留 checksum 占位
+        size_t start = buf.size();
+        buf.append(4, '\0');
+        
+        buf.push_back(static_cast<char>(op.type));
+        PutFixed32(buf, op.key.size());
+        buf.append(op.key);
+        PutFixed32(buf, op.value.size());
+        buf.append(op.value);
 
-    uint32_t crc = crc32(buf.data() + 4, buf.size() - 4);
-    memcpy(&buf[0], &crc, 4);
+        // 计算 CRC 并回填
+        uint32_t crc = crc32(buf.data() + start + 4, buf.size() - start - 4);
+        memcpy(&buf[start], &crc, 4);
+    }
 
+    // 一次 write 写完所有
     size_t written = 0;
     while (written < buf.size()) {
         ssize_t n = write(fd_, buf.data() + written, buf.size() - written);
@@ -74,7 +80,8 @@ Status WAL::AppendNoSync(char type, const Slice& key, const Slice& value) {
         written += n;
     }
 
-    return Status::OK();   // 注意：这里没有 fsync
+    // 一次刷盘
+    return Sync();
 }
 
 Status WAL::Recover(RecoverFn fn){
@@ -96,7 +103,7 @@ Status WAL::Recover(RecoverFn fn){
 
         uint32_t key_len;
         n = read(fd_, &key_len, 4);
-        if (n != 4) { ftruncate(fd_, record_start); break; }
+        if (n != 4 || key_len > 64 * 1024 * 1024) { ftruncate(fd_, record_start); break; }
 
         std::string key(key_len, '\0');
         n = read(fd_, &key[0], key_len);
@@ -104,7 +111,7 @@ Status WAL::Recover(RecoverFn fn){
 
         uint32_t val_len;
         n = read(fd_, &val_len, 4);
-        if (n != 4) { ftruncate(fd_, record_start); break; }
+        if (n != 4 || val_len > 64 * 1024 * 1024) { ftruncate(fd_, record_start); break; }
 
         std::string value(val_len, '\0');
         n = read(fd_, &value[0], val_len);

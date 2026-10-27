@@ -7,10 +7,28 @@
 #include <functional>
 #include <mutex>
 
+
+/**
+ * @brief 批量操作的类型。
+ */
+enum class OpType : char {
+    kDelete = 0,
+    kPut = 1
+};
+
+/**
+ * @brief 单条批量操作。
+ */
+struct BatchOp {
+    OpType type;
+    std::string key;
+    std::string value;
+};
+
 /**
  * @brief 预写日志（Write-Ahead Log）。
  *
- * 每次写操作先追加到日志并 fsync，保证崩溃后可恢复。
+ * 支持单条同步写与批量写，保证崩溃后可恢复。
  * 日志只追加，不修改，不删除。
  */
 class WAL{
@@ -39,13 +57,16 @@ public:
      */
     Status Append(char type, const Slice& key, const Slice& value);
 
-    // wal.h
-    Status AppendNoSync(char type, const Slice& key, const Slice& value);
+    /**
+     * @brief 批量追加多条记录，并只 fsync 一次。
+     * @param ops 操作列表（type, key, value）。
+     */
+    Status AppendBatch(const std::vector<BatchOp>& ops);
 
     /**
      * @brief 回放所有记录。
      * @param fn 每读到一条有效记录调用一次。
-     * @return 成功返回 OK；校验失败返回 Corruption。
+     * @return 成功返回 OK；校验失败遇到残缺/损坏记录时截断，返回 OK。
      */
     using RecoverFn = std::function<void(char type, const Slice&, const Slice&)>;
     Status Recover(RecoverFn fn);

@@ -22,12 +22,15 @@
 
 class DB {
 public:
-    struct BatchOp {
-        char type;   // 1 = Put, 0 = Delete
-        std::string key;
-        std::string value;
-    };
 
+    /**
+     * @brief 批量写入或删除多个键值对。
+     * @param ops 操作列表。
+     * @return 成功返回 OK；失败返回错误状态。
+     *
+     * 该接口会将整批操作一次性写入 WAL 并只刷盘一次，
+     * 适用于大批量数据导入场景，性能远高于循环调用 Put。
+     */
     Status WriteBatch(const std::vector<BatchOp>& ops);
 
     /**

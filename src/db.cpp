@@ -23,19 +23,14 @@ Status DB::WriteBatch(const std::vector<BatchOp>& ops) {
 
     std::lock_guard<std::mutex> lock(mu_);
 
-    // 1. 批量写 WAL（循环 Append 但只 fsync 一次）
-    for (const auto& op : ops) {
-        wal_->AppendNoSync(op.type, Slice(op.key), Slice(op.value));
-    }
-    wal_->Sync();   // 统一 fsync 一次
+    // 1. 一次性写入 WAL 并刷盘（如果失败，直接返回，不碰内存）
+    auto s = wal_->AppendBatch(ops);
+    if (!s.ok()) return s;
 
-    // 2. 批量写 MemTable
+    // 2. 再更新内存
     for (const auto& op : ops) {
-        if (op.type == 1) {
-            memtable_->Put(Slice(op.key), Slice(op.value));
-        } else {
-            memtable_->Delete(Slice(op.key));
-        }
+        if (op.type == OpType::kPut) memtable_->Put(Slice(op.key), Slice(op.value));
+        else memtable_->Delete(Slice(op.key));
     }
 
     return MaybeFlushLocked();
@@ -89,9 +84,9 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
         });
     
     auto s = (db)->wal_->Recover([&](char type, const Slice& key, const Slice& value) {
-    if (type == 1) {
+    if (type == static_cast<char>(OpType::kPut)) {
         (db)->memtable_->Put(key, value);
-    } else if (type == 0) {
+    } else if (type == static_cast<char>(OpType::kDelete)) {
         (db)->memtable_->Delete(key);
     }
 });
@@ -155,6 +150,10 @@ Status DB::MaybeFlushLocked() {
         Status cs = Compaction::Run(dir_path_, inputs, new_id);
         
         if (!cs.ok()) {
+            for (auto& sst : inputs) {
+                sstables_.push_back(std::move(sst));
+            }
+            next_file_id_--;
             return cs;
         }
 
@@ -182,7 +181,7 @@ Status DB::MaybeFlushLocked() {
 Status DB::Put(const Slice& key, const Slice& value) {
     
     std::lock_guard<std::mutex> lock(mu_);
-    auto s = wal_->Append(1, key, value);
+    auto s = wal_->Append(static_cast<char>(OpType::kPut), key, value);
     if (!s.ok()) return s;
     memtable_->Put(key, value);
     
@@ -219,7 +218,7 @@ std::optional<std::string> DB::Get(const Slice& key) {
 Status DB::Delete(const Slice& key) {
     
     std::lock_guard<std::mutex> lock(mu_);
-    auto s = wal_->Append(0, key, Slice());
+    auto s = wal_->Append(static_cast<char>(OpType::kDelete), key, Slice());
     if (!s.ok()) return s;
     memtable_->Delete(key);
     
