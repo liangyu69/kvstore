@@ -48,12 +48,18 @@ WAL::~WAL() {
 
 
 Status WAL::Append(char type, const Slice& key,const Slice& value){
+    auto s = AppendNoSync(type, key, value);
+    if (!s.ok()) return s;
+    return Sync();
+}
+
+// wal.cpp
+Status WAL::AppendNoSync(char type, const Slice& key, const Slice& value) {
+    // 把原来 Append 里除了 fsync 之外的所有逻辑搬过来
     std::string buf;
-
-    buf.append(4,'\0');
+    buf.append(4, '\0');
     buf.push_back(type);
-
-    PutFixed32(buf,key.size());
+    PutFixed32(buf, key.size());
     buf.append(key.data(), key.size());
     PutFixed32(buf, value.size());
     buf.append(value.data(), value.size());
@@ -62,21 +68,14 @@ Status WAL::Append(char type, const Slice& key,const Slice& value){
     memcpy(&buf[0], &crc, 4);
 
     size_t written = 0;
-    while (written < buf.size()){
-        ssize_t n = write(fd_, buf.data() + written ,buf.size() - written);
-        if (n <= 0){
-            return Status::IOError("write failed: "+std::string(strerror(errno)));
-        }
+    while (written < buf.size()) {
+        ssize_t n = write(fd_, buf.data() + written, buf.size() - written);
+        if (n <= 0) return Status::IOError("write failed");
         written += n;
     }
 
-    if (fsync(fd_) < 0) {
-        return Status::IOError("fsync failed: " + std::string(strerror(errno)));
-    }
-
-    return Status::OK();
+    return Status::OK();   // 注意：这里没有 fsync
 }
-
 
 Status WAL::Recover(RecoverFn fn){
     lseek(fd_, 0, SEEK_SET);
@@ -132,7 +131,7 @@ Status WAL::Recover(RecoverFn fn){
 
 
 Status WAL::Sync() {
-    if (fsync(fd_) < 0) {
+    if (fdatasync(fd_) < 0) {
         return Status::IOError("fsync failed: " + std::string(strerror(errno)));
     }
     return Status::OK();

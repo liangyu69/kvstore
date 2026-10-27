@@ -22,6 +22,14 @@
 
 class DB {
 public:
+    struct BatchOp {
+        char type;   // 1 = Put, 0 = Delete
+        std::string key;
+        std::string value;
+    };
+
+    Status WriteBatch(const std::vector<BatchOp>& ops);
+
     /**
      * @brief 打开或创建数据库。
      * @param path 数据库目录路径。

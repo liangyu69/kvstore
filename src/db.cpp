@@ -17,6 +17,31 @@ DB::DB(const std::string& path)
 
 DB::~DB() {}
 
+
+Status DB::WriteBatch(const std::vector<BatchOp>& ops) {
+    if (ops.empty()) return Status::OK();
+
+    std::lock_guard<std::mutex> lock(mu_);
+
+    // 1. 批量写 WAL（循环 Append 但只 fsync 一次）
+    for (const auto& op : ops) {
+        wal_->AppendNoSync(op.type, Slice(op.key), Slice(op.value));
+    }
+    wal_->Sync();   // 统一 fsync 一次
+
+    // 2. 批量写 MemTable
+    for (const auto& op : ops) {
+        if (op.type == 1) {
+            memtable_->Put(Slice(op.key), Slice(op.value));
+        } else {
+            memtable_->Delete(Slice(op.key));
+        }
+    }
+
+    return MaybeFlushLocked();
+}
+
+
 Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
     if (mkdir(path.c_str(), 0755) < 0 && errno != EEXIST) {
         return Status::IOError("mkdir failed: " + std::string(strerror(errno)));

@@ -39,6 +39,8 @@ public:
      */
     Status Append(char type, const Slice& key, const Slice& value);
 
+    // wal.h
+    Status AppendNoSync(char type, const Slice& key, const Slice& value);
 
     /**
      * @brief 回放所有记录。

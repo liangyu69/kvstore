@@ -28,13 +28,16 @@ int main() {
     auto start = std::chrono::high_resolution_clock::now();
 
     // 写线程
+        // 写线程（批量写）
     for (int t = 0; t < kThreads; t++) {
         threads.emplace_back([&, t]() {
+            std::vector<DB::BatchOp> ops;
             for (int i = 0; i < kOps; i++) {
                 std::string k = "key_" + std::to_string(t) + "_" + std::to_string(i);
                 std::string v = "val_" + std::to_string(t) + "_" + std::to_string(i);
-                assert(db->Put(Slice(k), Slice(v)).ok());
+                ops.push_back({1, k, v});
             }
+            assert(db->WriteBatch(ops).ok());
         });
     }
 
