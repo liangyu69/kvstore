@@ -18,7 +18,11 @@ static ssize_t ReadExact(int fd, char* buf, size_t n) {
     size_t total = 0;
     while (total < n) {
         ssize_t r = read(fd, buf + total, n - total);
-        if (r <= 0) return total;
+        if (r < 0) {
+            if (errno == EINTR) continue;  // 只针对 -1 且 EINTR 的情况重试
+            return total;                  // 真正的错误
+        }
+        if (r == 0) return total;          // EOF，正常结束
         total += r;
     }
     return total;
@@ -28,7 +32,12 @@ static Status WriteExact(int fd, const char* data, size_t n) {
     size_t total = 0;
     while (total < n) {
         ssize_t w = write(fd, data + total, n - total);
-        if (w <= 0) return Status::IOError("write failed");
+        if (w < 0) {
+            if (errno == EINTR) continue;  // 只针对 -1 且 EINTR 的情况重试
+            return Status::IOError("write failed");
+        }
+        // write 返回 0 表示写入了 0 字节（磁盘满或管道关闭），直接报错，不能死循环
+        if (w == 0) return Status::IOError("write returned 0"); 
         total += w;
     }
     return Status::OK();

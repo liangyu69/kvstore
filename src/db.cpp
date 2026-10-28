@@ -38,6 +38,7 @@ Status DB::WriteBatch(const std::vector<BatchOp>& ops) {
 
 
 Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
+
     if (mkdir(path.c_str(), 0755) < 0 && errno != EEXIST) {
         return Status::IOError("mkdir failed: " + std::string(strerror(errno)));
     }  
@@ -83,10 +84,10 @@ Status DB::Open(const std::string& path, std::unique_ptr<DB>& db) {
             return a->GetFileId() > b->GetFileId();  // 需要给 SSTable 加个方法
         });
     
-    auto s = (db)->wal_->Recover([&](char type, const Slice& key, const Slice& value) {
-    if (type == static_cast<char>(OpType::kPut)) {
+    auto s = (db)->wal_->Recover([&](OpType type, const Slice& key, const Slice& value) {
+    if (type == OpType::kPut) {
         (db)->memtable_->Put(key, value);
-    } else if (type == static_cast<char>(OpType::kDelete)) {
+    } else if (type == OpType::kDelete) {
         (db)->memtable_->Delete(key);
     }
 });
@@ -117,14 +118,18 @@ Status DB::MaybeFlushLocked() {
     }
     
     int dir_fd = open(dir_path_.c_str(), O_RDONLY);
-    fsync(dir_fd);
-    close(dir_fd);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
 
     // 3. 加入列表
     auto sst = SSTable::Open(dir_path_, flush_id);
-    if (sst) {
-        sstables_.insert(sstables_.begin(), std::move(sst));
+    if (!sst) {
+        memtable_ = std::move(old);
+        return Status::IOError("Failed to open newly flushed SSTable");
     }
+    sstables_.insert(sstables_.begin(), std::move(sst));
     next_file_id_++;
 
     // 4. 释放老的 MemTable
@@ -181,7 +186,7 @@ Status DB::MaybeFlushLocked() {
 Status DB::Put(const Slice& key, const Slice& value) {
     
     std::lock_guard<std::mutex> lock(mu_);
-    auto s = wal_->Append(static_cast<char>(OpType::kPut), key, value);
+    auto s = wal_->Append(OpType::kPut, key, value);
     if (!s.ok()) return s;
     memtable_->Put(key, value);
     
@@ -218,7 +223,7 @@ std::optional<std::string> DB::Get(const Slice& key) {
 Status DB::Delete(const Slice& key) {
     
     std::lock_guard<std::mutex> lock(mu_);
-    auto s = wal_->Append(static_cast<char>(OpType::kDelete), key, Slice());
+    auto s = wal_->Append(OpType::kDelete, key, Slice());
     if (!s.ok()) return s;
     memtable_->Delete(key);
     
