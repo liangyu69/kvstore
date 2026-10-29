@@ -4,17 +4,12 @@ project(kvstore CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 把 src 下所有 .cpp 打包成静态库（已经没有 main.cpp 了）
 file(GLOB SOURCES "src/*.cpp")
 add_library(kvstore STATIC ${SOURCES})
 target_include_directories(kvstore PUBLIC include)
 
-# 给库也加上 sanitizer（编译 + 链接）
-target_compile_options(kvstore PRIVATE -Wall -Wextra -g -fsanitize=address,undefined)
-target_link_options(kvstore PRIVATE -fsanitize=address,undefined)
-
-add_executable(main src/main.cpp)
-target_link_libraries(main kvstore)
-
-# 给 main 也加上 sanitizer（编译 + 链接）
-target_compile_options(main PRIVATE -Wall -Wextra -g -fsanitize=address,undefined)
-target_link_options(main PRIVATE -fsanitize=address,undefined)
+# 压测程序：开启 O2 优化，不带 Sanitizer，保证性能数据真实
+add_executable(bench bench/bench.cpp)
+target_link_libraries(bench kvstore)
+target_compile_options(bench PRIVATE -Wall -Wextra -O2)
